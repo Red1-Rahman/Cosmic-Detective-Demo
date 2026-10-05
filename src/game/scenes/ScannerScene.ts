@@ -14,6 +14,7 @@ export class ScannerScene extends Phaser.Scene {
   private selectedIndex = -1;
   private epoch: 'A' | 'B' = 'A';
   private blink = false;
+  private currentEpochLabel: 'A' | 'B' = 'A';
   private blinkTimer?: Phaser.Time.TimerEvent;
   private gridGfx!: Phaser.GameObjects.Graphics;
   private events_!: ScannerEvents;
@@ -54,6 +55,11 @@ export class ScannerScene extends Phaser.Scene {
     }
   }
 
+  /** Current epoch shown on screen, for the HUD. */
+  getEpochLabel(): 'A' | 'B' {
+    return this.currentEpochLabel;
+  }
+
   setSelected(index: number) {
     this.selectedIndex = index;
     this.draw();
@@ -83,6 +89,9 @@ export class ScannerScene extends Phaser.Scene {
 
   private draw() {
     if (!this.gridGfx || this.tiles.length === 0) return;
+    // Only the mover shifts while blinking; the epoch is driven by the timer.
+    const showingEpochB = this.blink && this.epoch === 'B';
+    this.currentEpochLabel = showingEpochB ? 'B' : 'A';
     this.gridGfx.clear();
     this.tileRects = [];
     const { cols, cell, ox, oy } = this.gridDims();
