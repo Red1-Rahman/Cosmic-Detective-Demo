@@ -6,6 +6,7 @@ import type { ScannerScene } from './game/scenes/ScannerScene';
 import { LEVELS, toolUnlocked, type ToolId } from './game/levels';
 import { QUESTS, questFor } from './game/quests';
 import type { Target } from './game/finds';
+import { bandSpectrum, epochSeries, sourceKinds } from './game/science';
 import { palettes, fonts, type DisplayMode } from './theme';
 import { Brief } from './ui/Brief';
 import { RankBar } from './ui/RankBar';
@@ -13,10 +14,13 @@ import { ResultPanel } from './ui/ResultPanel';
 import { Guide } from './ui/Guide';
 import { ScoreBar } from './ui/ScoreBar';
 import { QuestBar } from './ui/QuestBar';
+import { SpectrumPanel } from './ui/SpectrumPanel';
+import { LightCurve } from './ui/LightCurve';
 
 const LEVEL_TILE_COUNT = 12;
 const FIND_XP = 15;
 const FIND_POINTS = 50;
+const WRONG_LOG_PENALTY = 10;
 
 const TOOLS: { id: ToolId; label: string }[] = [
   { id: 'inspect', label: 'Inspect' },
@@ -41,6 +45,10 @@ export default function App() {
   const [guideStep, setGuideStep] = useState<number | null>(0);
   const [tutorialDone, setTutorialDone] = useState(false);
   const [rank, setRank] = useState(1);
+  const [band, setBand] = useState(0);
+  const [epoch, setEpoch] = useState(0);
+  const [inspectedStar, setInspectedStar] = useState<number | null>(null);
+  const [logged, setLogged] = useState<Record<string, boolean>>({});
 
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<ScannerScene | null>(null);
@@ -49,13 +57,77 @@ export default function App() {
   const level = LEVELS.find((l) => l.rank === rank) ?? LEVELS[0];
   const quest = questFor(rank);
   const isLastRank = rank === QUESTS[QUESTS.length - 1].rank;
+  const current = selected >= 0 ? tiles[selected] : null;
+  const currentVerdicts = current ? flagged[current.id] : undefined;
+  const verdict = currentVerdicts ? finalVerdict(currentVerdicts) : null;
+  const flaggedCount = Object.keys(flagged).length;
+  const isAnalysisTool = tool === 'multiband' || tool === 'lightcurve';
+  const spectrum = current && inspectedStar !== null ? bandSpectrum(current, inspectedStar) : null;
+  const series = current && inspectedStar !== null ? epochSeries(current, inspectedStar) : null;
+
+  // Phaser callbacks are created once, so they call through this ref to reach
+  // the latest state (quest, rank, streak) instead of a stale closure.
+  const latest = useRef({
+    handleFind: (_t: number, _g: Target | null) => {},
+    handleStarClick: (_t: number, _s: number) => {},
+  });
+
+  function credit() {
+    setTotalFinds((t) => t + 1);
+    setStreak((s) => s + 1);
+    setScore((s) => s + FIND_POINTS + streak * 5);
+    setXp((x) => x + FIND_XP);
+    const next = finds + 1;
+    if (next >= quest.target && !isLastRank) {
+      setFinds(0);
+      setRank((r) => r + 1);
+    } else {
+      setFinds(next);
+    }
+  }
+
+  function handleFind(tileIndex: number, target: Target | null) {
+    if (!target || target.label === 'decoy') {
+      setWrongClicks((w) => w + 1);
+      setStreak(0);
+      setScore((s) => Math.max(0, s - (target ? 10 : 5)));
+      return;
+    }
+    sceneRef.current?.markFound(tileIndex, target);
+    credit();
+  }
+
+  function handleStarClick(_tileIndex: number, starIndex: number) {
+    setInspectedStar(starIndex >= 0 ? starIndex : null);
+  }
+
+  function logSource() {
+    if (!current || inspectedStar === null || !isAnalysisTool) return;
+    const key = `${selected}:${inspectedStar}:${tool}`;
+    if (logged[key]) return;
+    setLogged((prev) => ({ ...prev, [key]: true }));
+
+    const kind = sourceKinds(current)[inspectedStar];
+    const wanted = tool === 'multiband' ? 'cold' : 'variable';
+    if (kind === wanted) {
+      credit();
+    } else {
+      setWrongClicks((w) => w + 1);
+      setStreak(0);
+      setScore((s) => Math.max(0, s - WRONG_LOG_PENALTY));
+    }
+  }
+
+  latest.current = { handleFind, handleStarClick };
 
   // Boot Phaser once per tile set.
   useEffect(() => {
     if (!mountRef.current) return;
     const game = createGame(mountRef.current, tiles, {
       onSelect: (i) => setSelected(i),
-      onFind: (tileIndex, target) => handleFind(tileIndex, target),
+      onFind: (t, g) => latest.current.handleFind(t, g),
+      onStarClick: (t, s) => latest.current.handleStarClick(t, s),
+      onEpoch: (e) => setEpoch(e),
     });
     let cancelled = false;
     const poll = () => {
@@ -73,12 +145,10 @@ export default function App() {
       game.destroy(true);
       sceneRef.current = null;
     };
-    // handleFind reads state through its closure; the scene is rebuilt only
-    // when the tile set changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tiles]);
 
   useEffect(() => {
+    setInspectedStar(null);
     sceneRef.current?.setSelected(selected);
   }, [selected]);
 
@@ -86,44 +156,24 @@ export default function App() {
     sceneRef.current?.setTool(tool);
   }, [tool]);
 
-  // Drop back to Inspect if the active tool is locked.
   useEffect(() => {
-    if (!toolUnlocked(tool, rank)) setTool('inspect');
-  }, [rank, tool]);
+    sceneRef.current?.setBand(band);
+  }, [band]);
 
-  // Move to the quest's tool automatically when a new rank begins.
+  useEffect(() => {
+    sceneRef.current?.setInspected(inspectedStar ?? -1);
+  }, [inspectedStar]);
+
+  // Drop back to Inspect if the active tool is locked. Blink stays available during the tutorial.
+  useEffect(() => {
+    const tutorialBlink = guideStep !== null && tool === 'blink';
+    if (!toolUnlocked(tool, rank) && !tutorialBlink) setTool('inspect');
+  }, [rank, tool, guideStep]);
+
+  // Switch to the current quest's tool when a new rank begins.
   useEffect(() => {
     setTool(quest.tool);
   }, [quest.tool]);
-
-  const current = selected >= 0 ? tiles[selected] : null;
-  const currentVerdicts = current ? flagged[current.id] : undefined;
-  const verdict = currentVerdicts ? finalVerdict(currentVerdicts) : null;
-  const flaggedCount = Object.keys(flagged).length;
-
-  function handleFind(tileIndex: number, target: Target | null) {
-    if (!target || target.label === 'decoy') {
-      setWrongClicks((w) => w + 1);
-      setStreak(0);
-      setScore((s) => Math.max(0, s - (target ? 10 : 5)));
-      return;
-    }
-
-    sceneRef.current?.markFound(tileIndex, target);
-    setTotalFinds((t) => t + 1);
-    setStreak((s) => s + 1);
-    setScore((s) => s + FIND_POINTS + streak * 5);
-    setXp((x) => x + FIND_XP);
-
-    setFinds((f) => {
-      const next = f + 1;
-      if (next >= quest.target && !isLastRank) {
-        setRank((r) => r + 1);
-        return 0;
-      }
-      return next;
-    });
-  }
 
   function flagCurrent() {
     if (!current || currentVerdicts) return;
@@ -197,7 +247,7 @@ export default function App() {
           />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             {TOOLS.map((t) => {
-              const unlocked = toolUnlocked(t.id, rank);
+              const unlocked = toolUnlocked(t.id, rank) || (guideStep !== null && t.id === 'blink');
               return (
                 <button
                   key={t.id}
@@ -211,10 +261,19 @@ export default function App() {
                 </button>
               );
             })}
+            {isAnalysisTool && (
+              <button
+                onClick={logSource}
+                disabled={!current || inspectedStar === null || !!logged[`${selected}:${inspectedStar}:${tool}`]}
+                style={{ ...btn(p, true, p.pass), marginLeft: 'auto' }}
+              >
+                Log source
+              </button>
+            )}
             <button
               onClick={flagCurrent}
               disabled={!current || !!currentVerdicts}
-              style={{ ...btn(p, true, p.reject), marginLeft: 'auto' }}
+              style={{ ...btn(p, true, p.reject), marginLeft: isAnalysisTool ? 0 : 'auto' }}
             >
               File this lead
             </button>
@@ -222,7 +281,13 @@ export default function App() {
           {tutorialDone && <span style={{ color: p.muted, fontSize: 12 }}>Tutorial complete. Replay from settings.</span>}
         </main>
 
-        <aside style={{ minHeight: 0, overflow: 'auto' }}>
+        <aside style={{ minHeight: 0, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {tool === 'multiband' && (
+            <SpectrumPanel palette={p} spectrum={spectrum} band={band} onBand={setBand} />
+          )}
+          {tool === 'lightcurve' && (
+            <LightCurve palette={p} series={series} epoch={epoch} />
+          )}
           <ResultPanel palette={p} tile={current} steps={currentVerdicts} />
         </aside>
       </div>
