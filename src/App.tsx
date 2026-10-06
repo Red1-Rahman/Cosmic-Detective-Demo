@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import Phaser from 'phaser';
 import { buildTiles, TUTORIAL_TILE_INDEX, type Tile } from './game/data';
 import { verifyFlag, finalVerdict, type Verdict } from './game/verify';
 import { createGame } from './game/createGame';
@@ -33,13 +32,11 @@ export default function App() {
   const [selected, setSelected] = useState<number>(-1);
   const [tool, setTool] = useState<ToolId>('inspect');
   const [flagged, setFlagged] = useState<Record<string, Verdict[]>>({});
-  const [finds, setFinds] = useState<number>(0);          // finds toward the current quest
+  const [finds, setFinds] = useState<number>(0);
   const [totalFinds, setTotalFinds] = useState<number>(0);
   const [wrongClicks, setWrongClicks] = useState<number>(0);
   const [xp, setXp] = useState(0);
   const [score, setScore] = useState(0);
-  const [correct, setCorrect] = useState(0);
-  const [attempts, setAttempts] = useState(0);
   const [streak, setStreak] = useState(0);
   const [guideStep, setGuideStep] = useState<number | null>(0);
   const [tutorialDone, setTutorialDone] = useState(false);
@@ -76,8 +73,8 @@ export default function App() {
       game.destroy(true);
       sceneRef.current = null;
     };
-    // handleFind reads latest state through refs-free closures; the scene
-    // is rebuilt only if the tile set changes.
+    // handleFind reads state through its closure; the scene is rebuilt only
+    // when the tile set changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tiles]);
 
@@ -89,7 +86,7 @@ export default function App() {
     sceneRef.current?.setTool(tool);
   }, [tool]);
 
-  // Drop back to Inspect if the active tool is locked (rank can only rise, but stay safe).
+  // Drop back to Inspect if the active tool is locked.
   useEffect(() => {
     if (!toolUnlocked(tool, rank)) setTool('inspect');
   }, [rank, tool]);
@@ -105,16 +102,10 @@ export default function App() {
   const flaggedCount = Object.keys(flagged).length;
 
   function handleFind(tileIndex: number, target: Target | null) {
-    if (!target) {
+    if (!target || target.label === 'decoy') {
       setWrongClicks((w) => w + 1);
       setStreak(0);
-      setScore((s) => Math.max(0, s - 5));
-      return;
-    }
-    if (target.label === 'decoy') {
-      setWrongClicks((w) => w + 1);
-      setStreak(0);
-      setScore((s) => Math.max(0, s - 10));
+      setScore((s) => Math.max(0, s - (target ? 10 : 5)));
       return;
     }
 
@@ -127,7 +118,6 @@ export default function App() {
     setFinds((f) => {
       const next = f + 1;
       if (next >= quest.target && !isLastRank) {
-        // Rank up: reset the quest counter for the next rank.
         setRank((r) => r + 1);
         return 0;
       }
@@ -141,9 +131,7 @@ export default function App() {
     setFlagged((prev) => ({ ...prev, [current.id]: steps }));
     const v = finalVerdict(steps);
     const isGood = v.status === 'known' || v.status === 'candidate';
-    setAttempts((a) => a + 1);
     if (isGood) {
-      setCorrect((c) => c + 1);
       setScore((s) => s + 100);
       setXp((x) => x + 25);
     } else {
