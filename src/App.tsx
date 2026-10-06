@@ -4,15 +4,28 @@ import { buildTiles, TUTORIAL_TILE_INDEX, type Tile } from './game/data';
 import { verifyFlag, finalVerdict, type Verdict } from './game/verify';
 import { createGame } from './game/createGame';
 import type { ScannerScene } from './game/scenes/ScannerScene';
-import { LEVELS, levelForXp, toolUnlocked, type ToolId } from './game/levels';
+import { LEVELS, toolUnlocked, type ToolId } from './game/levels';
+import { QUESTS, questFor } from './game/quests';
+import type { Target } from './game/finds';
 import { palettes, fonts, type DisplayMode } from './theme';
 import { Brief } from './ui/Brief';
 import { RankBar } from './ui/RankBar';
 import { ResultPanel } from './ui/ResultPanel';
 import { Guide } from './ui/Guide';
 import { ScoreBar } from './ui/ScoreBar';
+import { QuestBar } from './ui/QuestBar';
 
 const LEVEL_TILE_COUNT = 12;
+const FIND_XP = 15;
+const FIND_POINTS = 50;
+
+const TOOLS: { id: ToolId; label: string }[] = [
+  { id: 'inspect', label: 'Inspect' },
+  { id: 'blink', label: 'Blink' },
+  { id: 'difference', label: 'Difference' },
+  { id: 'multiband', label: 'Multi-band' },
+  { id: 'lightcurve', label: 'Light curve' },
+];
 
 export default function App() {
   const [mode, setMode] = useState<DisplayMode>('dark');
@@ -20,6 +33,9 @@ export default function App() {
   const [selected, setSelected] = useState<number>(-1);
   const [tool, setTool] = useState<ToolId>('inspect');
   const [flagged, setFlagged] = useState<Record<string, Verdict[]>>({});
+  const [finds, setFinds] = useState<number>(0);          // finds toward the current quest
+  const [totalFinds, setTotalFinds] = useState<number>(0);
+  const [wrongClicks, setWrongClicks] = useState<number>(0);
   const [xp, setXp] = useState(0);
   const [score, setScore] = useState(0);
   const [correct, setCorrect] = useState(0);
@@ -27,22 +43,23 @@ export default function App() {
   const [streak, setStreak] = useState(0);
   const [guideStep, setGuideStep] = useState<number | null>(0);
   const [tutorialDone, setTutorialDone] = useState(false);
+  const [rank, setRank] = useState(1);
 
   const mountRef = useRef<HTMLDivElement>(null);
-  const gameRef = useRef<Phaser.Game | null>(null);
   const sceneRef = useRef<ScannerScene | null>(null);
 
   const p = palettes[mode];
-  const rank = levelForXp(xp).rank;
   const level = LEVELS.find((l) => l.rank === rank) ?? LEVELS[0];
+  const quest = questFor(rank);
+  const isLastRank = rank === QUESTS[QUESTS.length - 1].rank;
 
-  // Boot Phaser once.
+  // Boot Phaser once per tile set.
   useEffect(() => {
     if (!mountRef.current) return;
     const game = createGame(mountRef.current, tiles, {
       onSelect: (i) => setSelected(i),
+      onFind: (tileIndex, target) => handleFind(tileIndex, target),
     });
-    gameRef.current = game;
     let cancelled = false;
     const poll = () => {
       if (cancelled) return;
@@ -57,9 +74,11 @@ export default function App() {
     return () => {
       cancelled = true;
       game.destroy(true);
-      gameRef.current = null;
       sceneRef.current = null;
     };
+    // handleFind reads latest state through refs-free closures; the scene
+    // is rebuilt only if the tile set changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tiles]);
 
   useEffect(() => {
@@ -70,15 +89,51 @@ export default function App() {
     sceneRef.current?.setTool(tool);
   }, [tool]);
 
-  // If the player's rank drops below the active tool's rank, fall back to Inspect.
+  // Drop back to Inspect if the active tool is locked (rank can only rise, but stay safe).
   useEffect(() => {
     if (!toolUnlocked(tool, rank)) setTool('inspect');
   }, [rank, tool]);
+
+  // Move to the quest's tool automatically when a new rank begins.
+  useEffect(() => {
+    setTool(quest.tool);
+  }, [quest.tool]);
 
   const current = selected >= 0 ? tiles[selected] : null;
   const currentVerdicts = current ? flagged[current.id] : undefined;
   const verdict = currentVerdicts ? finalVerdict(currentVerdicts) : null;
   const flaggedCount = Object.keys(flagged).length;
+
+  function handleFind(tileIndex: number, target: Target | null) {
+    if (!target) {
+      setWrongClicks((w) => w + 1);
+      setStreak(0);
+      setScore((s) => Math.max(0, s - 5));
+      return;
+    }
+    if (target.label === 'decoy') {
+      setWrongClicks((w) => w + 1);
+      setStreak(0);
+      setScore((s) => Math.max(0, s - 10));
+      return;
+    }
+
+    sceneRef.current?.markFound(tileIndex, target);
+    setTotalFinds((t) => t + 1);
+    setStreak((s) => s + 1);
+    setScore((s) => s + FIND_POINTS + streak * 5);
+    setXp((x) => x + FIND_XP);
+
+    setFinds((f) => {
+      const next = f + 1;
+      if (next >= quest.target && !isLastRank) {
+        // Rank up: reset the quest counter for the next rank.
+        setRank((r) => r + 1);
+        return 0;
+      }
+      return next;
+    });
+  }
 
   function flagCurrent() {
     if (!current || currentVerdicts) return;
@@ -86,25 +141,21 @@ export default function App() {
     setFlagged((prev) => ({ ...prev, [current.id]: steps }));
     const v = finalVerdict(steps);
     const isGood = v.status === 'known' || v.status === 'candidate';
-
     setAttempts((a) => a + 1);
     if (isGood) {
       setCorrect((c) => c + 1);
-      setStreak((s) => s + 1);
-      setScore((s) => s + 100 + streak * 10);
+      setScore((s) => s + 100);
       setXp((x) => x + 25);
     } else {
-      setStreak(0);
       setScore((s) => s + 10);
       setXp((x) => x + 5);
     }
-
     if (guideStep === 3 && current.id === tiles[TUTORIAL_TILE_INDEX].id) {
       setGuideStep(4);
     }
   }
 
-  // Guide step transitions driven by real actions.
+  // Guide steps advance only on real actions.
   useEffect(() => {
     if (guideStep === 1 && selected >= 0) setGuideStep(2);
     if (guideStep === 2 && tool === 'blink') setGuideStep(3);
@@ -122,21 +173,13 @@ export default function App() {
     }
   }, [guideStep, selected]);
 
-  const tools: { id: ToolId; label: string }[] = [
-    { id: 'inspect', label: 'Inspect' },
-    { id: 'blink', label: 'Blink' },
-    { id: 'difference', label: 'Difference' },
-    { id: 'multiband', label: 'Multi-band' },
-    { id: 'lightcurve', label: 'Light curve' },
-  ];
-
   return (
     <div style={{ width: '100vw', height: '100vh', background: p.bg, color: p.text, fontFamily: fonts.ui, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 18px', borderBottom: `1px solid ${p.border}`, background: p.panel }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ width: 26, height: 26, borderRadius: '50%', border: `1px solid ${p.accent}`, background: `radial-gradient(circle, ${p.accent} 0%, transparent 70%)` }} aria-hidden />
           <strong style={{ letterSpacing: 2, fontFamily: fonts.mono, fontSize: 13 }}>COSMIC DETECTIVE</strong>
-          <span style={{ color: p.muted, fontSize: 12, fontFamily: fonts.mono }}>FILE 01 · {level.title.toUpperCase()}</span>
+          <span style={{ color: p.muted, fontSize: 12, fontFamily: fonts.mono }}>RANK {rank} · {level.title.toUpperCase()}</span>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {(['dark', 'light', 'colorblind'] as DisplayMode[]).map((m) => (
@@ -148,23 +191,24 @@ export default function App() {
       </header>
 
       <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr 300px', gap: 14, padding: 14, flex: 1, minHeight: 0 }}>
-        <aside style={{ display: 'flex', flexDirection: 'column', gap: 14, minHeight: 0 }}>
+        <aside style={{ display: 'flex', flexDirection: 'column', gap: 14, minHeight: 0, overflow: 'auto' }}>
           <Brief palette={p} rank={rank} />
+          <QuestBar palette={p} quest={quest} found={finds} />
           <RankBar palette={p} xp={xp} rank={rank} tilesReviewed={flaggedCount} />
-          <ScoreBar palette={p} score={score} correct={correct} attempts={attempts} streak={streak} />
+          <ScoreBar palette={p} score={score} correct={totalFinds} attempts={wrongClicks} streak={streak} />
         </aside>
 
         <main style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, gap: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: p.muted, fontSize: 12, fontFamily: fonts.mono }}>
             <span>SKY GRID · {tiles.length} TILES</span>
-            <span>{current ? `${current.label} · ${current.coord}` : 'Select a tile'}</span>
+            <span>{current ? `${current.label} · ${current.coord}` : 'Open a tile to begin'}</span>
           </div>
           <div
             ref={mountRef}
             style={{ flex: 1, minHeight: 0, borderRadius: 10, overflow: 'hidden', border: `1px solid ${p.border}`, background: '#06070E' }}
           />
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            {tools.map((t) => {
+            {TOOLS.map((t) => {
               const unlocked = toolUnlocked(t.id, rank);
               return (
                 <button
