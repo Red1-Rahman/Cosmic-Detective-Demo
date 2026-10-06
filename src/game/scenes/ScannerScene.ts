@@ -1,20 +1,13 @@
 import Phaser from 'phaser';
 import type { Tile } from '../data';
 import type { ToolId } from '../levels';
+import { targetsFor, type Target } from '../finds';
 
 export interface ScannerEvents {
   onSelect: (index: number) => void;
+  onFind: (tileIndex: number, target: Target | null) => void;
 }
 
-/**
- * Anomaly Scanner. Each tool changes only how the tile is shown:
- * - inspect: single epoch, no overlay
- * - blink: alternates epochs
- * - difference: shows only the mover's change
- * - multiband: tints by simulated band (presentation only)
- * - lightcurve: shows a brightness readout (presentation only)
- * Selection and flagging are unchanged across all tools.
- */
 export class ScannerScene extends Phaser.Scene {
   private tiles: Tile[] = [];
   private selectedIndex = -1;
@@ -22,8 +15,11 @@ export class ScannerScene extends Phaser.Scene {
   private tool: ToolId = 'inspect';
   private blinkTimer?: Phaser.Time.TimerEvent;
   private gridGfx!: Phaser.GameObjects.Graphics;
+  private hintGfx!: Phaser.GameObjects.Graphics;
   private events_!: ScannerEvents;
   private tileRects: { x: number; y: number; w: number; h: number }[] = [];
+  private hints: Target[] = [];
+  private foundKeys = new Set<string>();
 
   constructor() {
     super('ScannerScene');
@@ -36,12 +32,12 @@ export class ScannerScene extends Phaser.Scene {
 
   create() {
     this.gridGfx = this.add.graphics();
+    this.hintGfx = this.add.graphics();
     this.scale.on('resize', () => this.draw());
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => this.handlePointer(p));
     this.draw();
   }
 
-  /** Called from React when the active tool changes. */
   setTool(tool: ToolId) {
     this.tool = tool;
     this.blinkTimer?.remove();
@@ -57,12 +53,26 @@ export class ScannerScene extends Phaser.Scene {
         },
       });
     }
+    this.refreshHints();
     this.draw();
   }
 
   setSelected(index: number) {
     this.selectedIndex = index;
+    this.refreshHints();
     this.draw();
+  }
+
+  /** Marks a find as already claimed so it can't be scored twice. */
+  markFound(tileIndex: number, target: Target) {
+    this.foundKeys.add(`${tileIndex}:${target.x.toFixed(3)}:${target.y.toFixed(3)}`);
+    this.draw();
+  }
+
+  /** Hints are only shown for the open tile and the active tool. */
+  private refreshHints() {
+    const tile = this.tiles[this.selectedIndex];
+    this.hints = tile ? targetsFor(tile, this.tool) : [];
   }
 
   private gridDims() {
@@ -83,6 +93,7 @@ export class ScannerScene extends Phaser.Scene {
   private draw() {
     if (!this.gridGfx || this.tiles.length === 0) return;
     this.gridGfx.clear();
+    this.hintGfx.clear();
     this.tileRects = [];
     const { cols, cell, ox, oy } = this.gridDims();
     const inset = 6;
@@ -102,11 +113,11 @@ export class ScannerScene extends Phaser.Scene {
       this.gridGfx.lineStyle(isSel ? 3 : 1, isSel ? 0xd9a441 : 0x2a2b45, 1);
       this.gridGfx.strokeRect(x, y, w, h);
 
-      this.drawTile(tile, x, y, w, h);
+      this.drawTile(tile, x, y, w, h, isSel);
     });
   }
 
-  private drawTile(tile: Tile, x: number, y: number, w: number, h: number) {
+  private drawTile(tile: Tile, x: number, y: number, w: number, h: number, isSelected: boolean) {
     const g = this.gridGfx;
     const scale = w / 220;
     const tint = this.tool === 'multiband' ? 0xbfd8ff : 0xffffff;
@@ -119,20 +130,15 @@ export class ScannerScene extends Phaser.Scene {
     if (tile.halo) {
       g.fillStyle(0xffe9b0, 0.12);
       g.fillCircle(x + tile.halo.x * w, y + tile.halo.y * h, tile.halo.r * w);
-      g.fillStyle(0xffffff, 0.9);
-      g.fillCircle(x + tile.halo.x * w, y + tile.halo.y * h, 2.2 * scale);
     }
 
     if (tile.mover) {
       const m = tile.mover;
       if (this.tool === 'difference') {
-        // Show only the change: the "from" and "to" points, with the static field removed.
-        const from = m.from;
-        const to = m.to;
         g.fillStyle(0xd9685a, 0.9);
-        g.fillCircle(x + from.x * w, y + from.y * h, m.r * scale);
+        g.fillCircle(x + m.from.x * w, y + m.from.y * h, m.r * scale);
         g.fillStyle(0x6fbf8e, 0.9);
-        g.fillCircle(x + to.x * w, y + to.y * h, m.r * scale);
+        g.fillCircle(x + m.to.x * w, y + m.to.y * h, m.r * scale);
       } else {
         const pos = this.epoch === 'A' ? m.from : m.to;
         g.fillStyle(0xffffff, m.b);
@@ -141,7 +147,6 @@ export class ScannerScene extends Phaser.Scene {
     }
 
     if (this.tool === 'lightcurve') {
-      // Simple brightness trace in the tile's lower strip.
       g.lineStyle(1, 0xd9a441, 0.9);
       g.beginPath();
       for (let i = 0; i <= 20; i++) {
@@ -152,12 +157,37 @@ export class ScannerScene extends Phaser.Scene {
       }
       g.strokePath();
     }
+
+    // Hint rings only on the open tile, so the player has to look for them.
+    if (isSelected) {
+      const tileIndex = this.tiles.indexOf(tile);
+      for (const t of this.hints) {
+        const key = `${tileIndex}:${t.x.toFixed(3)}:${t.y.toFixed(3)}`;
+        if (this.foundKeys.has(key)) continue;
+        this.hintGfx.lineStyle(1, 0xd9a441, 0.5);
+        this.hintGfx.strokeCircle(x + t.x * w, y + t.y * h, 9 * scale);
+      }
+    }
   }
 
   private handlePointer(p: Phaser.Input.Pointer) {
     const idx = this.tileRects.findIndex(
       (r) => p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h,
     );
-    if (idx >= 0) this.events_.onSelect(idx);
+    if (idx < 0) return;
+
+    const r = this.tileRects[idx];
+    // Clicking a tile that isn't open just opens it.
+    if (idx !== this.selectedIndex) {
+      this.events_.onSelect(idx);
+      return;
+    }
+    // Clicking the open tile checks for a target under the pointer.
+    const nx = (p.x - r.x) / r.w;
+    const ny = (p.y - r.y) / r.h;
+    const hit = this.hints.find(
+      (t) => Math.hypot(t.x - nx, t.y - ny) <= 0.05,
+    ) ?? null;
+    this.events_.onFind(idx, hit);
   }
 }
