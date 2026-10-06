@@ -6,17 +6,17 @@ export interface Palette {
   panel: string;
   text: string;
   muted: string;
-  accent: string;   // rank / XP indicators
-  known: string;    // known object, catalog matched
-  pass: string;     // flag accepted
-  pending: string;  // awaiting consensus
-  info: string;     // neutral metadata
-  reject: string;   // flag rejected
-  candidate: string;// professional follow-up candidate
+  accent: string;    // rank / XP / case-file accents
+  known: string;
+  pass: string;
+  pending: string;
+  info: string;
+  reject: string;
+  candidate: string;
   border: string;
 }
 
-// Okabe-Ito values come straight from GDD 9.2.
+// Okabe-Ito values from GDD 9.2.
 const okabeIto = {
   orange: '#E69F00',
   skyBlue: '#56B4E9',
@@ -25,43 +25,45 @@ const okabeIto = {
   blue: '#0072B2',
   vermillion: '#D55E00',
   reddishPurple: '#CC79A7',
-  black: '#000000',
 };
 
 export const palettes: Record<DisplayMode, Palette> = {
+  // Night-sky case file: deep indigo, aged-amber accents.
   dark: {
-    bg: '#07090F',
-    panel: '#111827',
-    text: '#E5E7EB',
-    muted: '#94A3B8',
-    accent: '#E0A24A',
-    known: '#60A5FA',
-    pass: '#34D399',
-    pending: '#FACC15',
-    info: '#38BDF8',
-    reject: '#F87171',
-    candidate: '#F472B6',
-    border: '#1F2A3D',
+    bg: '#06070E',
+    panel: '#121426',
+    text: '#E8E2D0',
+    muted: '#8F8A9E',
+    accent: '#D9A441',
+    known: '#7DA7D9',
+    pass: '#6FBF8E',
+    pending: '#E0C25A',
+    info: '#8FB8D9',
+    reject: '#D9685A',
+    candidate: '#B77BC4',
+    border: '#2A2B45',
   },
+  // Aged paper case file, ink on parchment.
   light: {
-    bg: '#F4F1EA',
-    panel: '#FFFFFF',
-    text: '#111827',
-    muted: '#4B5563',
-    accent: '#B45309',
-    known: '#1D4ED8',
-    pass: '#047857',
-    pending: '#A16207',
-    info: '#0369A1',
-    reject: '#B91C1C',
-    candidate: '#BE185D',
-    border: '#D6D3CB',
+    bg: '#EFE8D6',
+    panel: '#FBF6E9',
+    text: '#1E1B16',
+    muted: '#6B6457',
+    accent: '#9A6A1B',
+    known: '#1D4E89',
+    pass: '#2F6B45',
+    pending: '#8A6D12',
+    info: '#1F5F7A',
+    reject: '#9B2E22',
+    candidate: '#7A3A7E',
+    border: '#CDBF9E',
   },
+  // Okabe-Ito throughout, so meaning never depends on hue alone.
   colorblind: {
-    bg: '#07090F',
-    panel: '#111827',
-    text: okabeIto.black === '#000000' ? '#F5F5F5' : '#F5F5F5',
-    muted: '#A3A3A3',
+    bg: '#06070E',
+    panel: '#121426',
+    text: '#F5F2E8',
+    muted: '#A3A0A8',
     accent: okabeIto.orange,
     known: okabeIto.skyBlue,
     pass: okabeIto.bluishGreen,
@@ -69,7 +71,7 @@ export const palettes: Record<DisplayMode, Palette> = {
     info: okabeIto.blue,
     reject: okabeIto.vermillion,
     candidate: okabeIto.reddishPurple,
-    border: '#1F2A3D',
+    border: '#2A2B45',
   },
 };
 
