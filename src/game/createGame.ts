@@ -15,7 +15,6 @@ export function createGame(parent: HTMLElement, tiles: Tile[], events: ScannerEv
     render: { antialias: true },
     audio: { noAudio: true },
   });
-  // Register the scene and start it with data once the game has booted.
   game.events.once(Phaser.Core.Events.READY, () => {
     game.scene.add('ScannerScene', ScannerScene, true, { tiles, events });
   });
