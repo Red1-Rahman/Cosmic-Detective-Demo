@@ -2,20 +2,32 @@ import Phaser from 'phaser';
 import type { Tile } from '../data';
 import type { ToolId } from '../levels';
 import { targetsFor, type Target } from '../finds';
+import { bandFlux, epochFlux, EPOCH_COUNT } from '../science';
 
 export interface ScannerEvents {
   onSelect: (index: number) => void;
   onFind: (tileIndex: number, target: Target | null) => void;
+  onStarClick: (tileIndex: number, starIndex: number) => void;
+  onEpoch: (epoch: number) => void;
 }
+
+const ANALYSIS_TOOLS: ToolId[] = ['multiband', 'lightcurve'];
+const BAND_TINT = [0xcfe6ff, 0xbfd9ff, 0xf5e6c8, 0xffd29a, 0xffb27a, 0xff9a6a];
+const EPOCH_MS = 350;
+const MIN_VISIBLE_FLUX = 0.08;
+const STAR_PICK_RADIUS = 0.035;
 
 export class ScannerScene extends Phaser.Scene {
   private tiles: Tile[] = [];
   private selectedIndex = -1;
-  private epoch: 'A' | 'B' = 'A';
+  private inspectedStar = -1;
   private tool: ToolId = 'inspect';
+  private band = 0;
+  private epoch = 0;
+  private epochA: 'A' | 'B' = 'A';
   private blinkTimer?: Phaser.Time.TimerEvent;
+  private epochTimer?: Phaser.Time.TimerEvent;
   private gridGfx!: Phaser.GameObjects.Graphics;
-  private hintGfx!: Phaser.GameObjects.Graphics;
   private events_!: ScannerEvents;
   private tileRects: { x: number; y: number; w: number; h: number }[] = [];
   private hints: Target[] = [];
@@ -32,7 +44,6 @@ export class ScannerScene extends Phaser.Scene {
 
   create() {
     this.gridGfx = this.add.graphics();
-    this.hintGfx = this.add.graphics();
     this.scale.on('resize', () => this.draw());
     this.input.on('pointerdown', (p: Phaser.Input.Pointer) => this.handlePointer(p));
     this.draw();
@@ -40,39 +51,71 @@ export class ScannerScene extends Phaser.Scene {
 
   setTool(tool: ToolId) {
     this.tool = tool;
+
     this.blinkTimer?.remove();
     this.blinkTimer = undefined;
-    this.epoch = 'A';
+    this.epochTimer?.remove();
+    this.epochTimer = undefined;
+    this.epochA = 'A';
+    this.epoch = 0;
+
     if (tool === 'blink' || tool === 'difference') {
       this.blinkTimer = this.time.addEvent({
         delay: 700,
         loop: true,
         callback: () => {
-          this.epoch = this.epoch === 'A' ? 'B' : 'A';
+          this.epochA = this.epochA === 'A' ? 'B' : 'A';
           this.draw();
         },
       });
     }
+
+    if (tool === 'lightcurve') {
+      this.epochTimer = this.time.addEvent({
+        delay: EPOCH_MS,
+        loop: true,
+        callback: () => {
+          this.epoch = (this.epoch + 1) % EPOCH_COUNT;
+          this.events_.onEpoch(this.epoch);
+          this.draw();
+        },
+      });
+    }
+
     this.refreshHints();
     this.draw();
   }
 
   setSelected(index: number) {
     this.selectedIndex = index;
+    this.inspectedStar = -1;
     this.refreshHints();
     this.draw();
   }
 
-  /** Marks a find as already claimed so it can't be scored twice. */
+  setBand(band: number) {
+    this.band = band;
+    this.draw();
+  }
+
+  setInspected(starIndex: number) {
+    this.inspectedStar = starIndex;
+    this.draw();
+  }
+
+  /** Marks a click-to-find target as claimed so it can't be scored twice. */
   markFound(tileIndex: number, target: Target) {
     this.foundKeys.add(`${tileIndex}:${target.x.toFixed(3)}:${target.y.toFixed(3)}`);
     this.draw();
   }
 
-  /** Hints are only shown for the open tile and the active tool. */
+  private isAnalysis(): boolean {
+    return ANALYSIS_TOOLS.includes(this.tool);
+  }
+
   private refreshHints() {
     const tile = this.tiles[this.selectedIndex];
-    this.hints = tile ? targetsFor(tile, this.tool) : [];
+    this.hints = tile && !this.isAnalysis() ? targetsFor(tile, this.tool) : [];
   }
 
   private gridDims() {
@@ -93,7 +136,6 @@ export class ScannerScene extends Phaser.Scene {
   private draw() {
     if (!this.gridGfx || this.tiles.length === 0) return;
     this.gridGfx.clear();
-    this.hintGfx.clear();
     this.tileRects = [];
     const { cols, cell, ox, oy } = this.gridDims();
     const inset = 6;
@@ -113,26 +155,44 @@ export class ScannerScene extends Phaser.Scene {
       this.gridGfx.lineStyle(isSel ? 3 : 1, isSel ? 0xd9a441 : 0x2a2b45, 1);
       this.gridGfx.strokeRect(x, y, w, h);
 
-      this.drawTile(tile, x, y, w, h, isSel);
+      this.drawTile(tile, i, x, y, w, h, isSel);
     });
   }
 
-  private drawTile(tile: Tile, x: number, y: number, w: number, h: number, isSelected: boolean) {
+  private drawTile(tile: Tile, tileIndex: number, x: number, y: number, w: number, h: number, isSelected: boolean) {
     const g = this.gridGfx;
     const scale = w / 220;
-    const tint = this.tool === 'multiband' ? 0xbfd8ff : 0xffffff;
+    const analysis = this.isAnalysis();
 
-    for (const s of tile.stars) {
-      g.fillStyle(tint, s.b);
-      g.fillCircle(x + s.x * w, y + s.y * h, s.r * scale);
+    if (this.tool === 'multiband') {
+      // Each source is drawn at its brightness in the chosen band. Faint
+      // sources in short bands are hidden, so the player must switch bands.
+      tile.stars.forEach((s, idx) => {
+        const f = bandFlux(tile, idx, this.band);
+        if (f < MIN_VISIBLE_FLUX) return;
+        g.fillStyle(BAND_TINT[this.band], Math.min(1, f));
+        g.fillCircle(x + s.x * w, y + s.y * h, s.r * scale);
+      });
+    } else if (this.tool === 'lightcurve') {
+      // Sources pulse with their brightness at the current epoch.
+      tile.stars.forEach((s, idx) => {
+        const f = Math.max(0, epochFlux(tile, idx, this.epoch));
+        g.fillStyle(0xffffff, Math.min(1, f));
+        g.fillCircle(x + s.x * w, y + s.y * h, s.r * scale);
+      });
+    } else {
+      tile.stars.forEach((s) => {
+        g.fillStyle(0xffffff, s.b);
+        g.fillCircle(x + s.x * w, y + s.y * h, s.r * scale);
+      });
     }
 
-    if (tile.halo) {
+    if (tile.halo && !analysis) {
       g.fillStyle(0xffe9b0, 0.12);
       g.fillCircle(x + tile.halo.x * w, y + tile.halo.y * h, tile.halo.r * w);
     }
 
-    if (tile.mover) {
+    if (tile.mover && !analysis) {
       const m = tile.mover;
       if (this.tool === 'difference') {
         g.fillStyle(0xd9685a, 0.9);
@@ -140,34 +200,44 @@ export class ScannerScene extends Phaser.Scene {
         g.fillStyle(0x6fbf8e, 0.9);
         g.fillCircle(x + m.to.x * w, y + m.to.y * h, m.r * scale);
       } else {
-        const pos = this.epoch === 'A' ? m.from : m.to;
+        const pos = this.epochA === 'A' ? m.from : m.to;
         g.fillStyle(0xffffff, m.b);
         g.fillCircle(x + pos.x * w, y + pos.y * h, m.r * scale);
       }
     }
 
-    if (this.tool === 'lightcurve') {
-      g.lineStyle(1, 0xd9a441, 0.9);
-      g.beginPath();
-      for (let i = 0; i <= 20; i++) {
-        const px = x + (i / 20) * w;
-        const py = y + h * 0.9 - Math.sin(i * 0.6 + tile.seed) * h * 0.05;
-        if (i === 0) g.moveTo(px, py);
-        else g.lineTo(px, py);
+    // Ring the inspected source in analysis modes.
+    if (analysis && isSelected && this.inspectedStar >= 0) {
+      const s = tile.stars[this.inspectedStar];
+      if (s) {
+        g.lineStyle(1.5, 0xd9a441, 1);
+        g.strokeCircle(x + s.x * w, y + s.y * h, 8 * scale);
       }
-      g.strokePath();
     }
 
-    // Hint rings only on the open tile, so the player has to look for them.
-    if (isSelected) {
-      const tileIndex = this.tiles.indexOf(tile);
+    // Click-to-find hint rings on the open tile (Ranks 1 to 3).
+    if (isSelected && !analysis) {
       for (const t of this.hints) {
         const key = `${tileIndex}:${t.x.toFixed(3)}:${t.y.toFixed(3)}`;
         if (this.foundKeys.has(key)) continue;
-        this.hintGfx.lineStyle(1, 0xd9a441, 0.5);
-        this.hintGfx.strokeCircle(x + t.x * w, y + t.y * h, 9 * scale);
+        g.lineStyle(1, 0xd9a441, 0.5);
+        g.strokeCircle(x + t.x * w, y + t.y * h, 9 * scale);
       }
     }
+  }
+
+  private nearestVisibleStar(tile: Tile, nx: number, ny: number): number {
+    let best = -1;
+    let bestDist = STAR_PICK_RADIUS;
+    tile.stars.forEach((s, idx) => {
+      if (this.tool === 'multiband' && bandFlux(tile, idx, this.band) < MIN_VISIBLE_FLUX) return;
+      const d = Math.hypot(s.x - nx, s.y - ny);
+      if (d <= bestDist) {
+        bestDist = d;
+        best = idx;
+      }
+    });
+    return best;
   }
 
   private handlePointer(p: Phaser.Input.Pointer) {
@@ -176,18 +246,23 @@ export class ScannerScene extends Phaser.Scene {
     );
     if (idx < 0) return;
 
-    const r = this.tileRects[idx];
-    // Clicking a tile that isn't open just opens it.
+    // Clicking a closed tile opens it.
     if (idx !== this.selectedIndex) {
       this.events_.onSelect(idx);
       return;
     }
-    // Clicking the open tile checks for a target under the pointer.
+
+    const r = this.tileRects[idx];
     const nx = (p.x - r.x) / r.w;
     const ny = (p.y - r.y) / r.h;
-    const hit = this.hints.find(
-      (t) => Math.hypot(t.x - nx, t.y - ny) <= 0.05,
-    ) ?? null;
+
+    if (this.isAnalysis()) {
+      // Analysis modes: clicking selects a source to inspect (-1 clears it).
+      this.events_.onStarClick(idx, this.nearestVisibleStar(this.tiles[idx], nx, ny));
+      return;
+    }
+
+    const hit = this.hints.find((t) => Math.hypot(t.x - nx, t.y - ny) <= 0.05) ?? null;
     this.events_.onFind(idx, hit);
   }
 }
