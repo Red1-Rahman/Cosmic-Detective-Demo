@@ -131,4 +131,88 @@ export default function App() {
   ];
 
   return (
-    <div style={{ width: '100vw', height: '100vh', background: p.bg, color: p.text,
+    <div style={{ width: '100vw', height: '100vh', background: p.bg, color: p.text, fontFamily: fonts.ui, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 18px', borderBottom: `1px solid ${p.border}`, background: p.panel }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 26, height: 26, borderRadius: '50%', border: `1px solid ${p.accent}`, background: `radial-gradient(circle, ${p.accent} 0%, transparent 70%)` }} aria-hidden />
+          <strong style={{ letterSpacing: 2, fontFamily: fonts.mono, fontSize: 13 }}>COSMIC DETECTIVE</strong>
+          <span style={{ color: p.muted, fontSize: 12, fontFamily: fonts.mono }}>FILE 01 · {level.title.toUpperCase()}</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {(['dark', 'light', 'colorblind'] as DisplayMode[]).map((m) => (
+            <button key={m} onClick={() => setMode(m)} aria-pressed={mode === m} style={btn(p, mode === m)}>
+              {m === 'dark' ? 'Night' : m === 'light' ? 'Parchment' : 'Colorblind safe'}
+            </button>
+          ))}
+        </div>
+      </header>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr 300px', gap: 14, padding: 14, flex: 1, minHeight: 0 }}>
+        <aside style={{ display: 'flex', flexDirection: 'column', gap: 14, minHeight: 0 }}>
+          <Brief palette={p} rank={rank} />
+          <RankBar palette={p} xp={xp} rank={rank} tilesReviewed={flaggedCount} />
+          <ScoreBar palette={p} score={score} correct={correct} attempts={attempts} streak={streak} />
+        </aside>
+
+        <main style={{ display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, gap: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: p.muted, fontSize: 12, fontFamily: fonts.mono }}>
+            <span>SKY GRID · {tiles.length} TILES</span>
+            <span>{current ? `${current.label} · ${current.coord}` : 'Select a tile'}</span>
+          </div>
+          <div
+            ref={mountRef}
+            style={{ flex: 1, minHeight: 0, borderRadius: 10, overflow: 'hidden', border: `1px solid ${p.border}`, background: '#06070E' }}
+          />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {tools.map((t) => {
+              const unlocked = toolUnlocked(t.id, rank);
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => unlocked && setTool(t.id)}
+                  disabled={!unlocked}
+                  aria-pressed={tool === t.id}
+                  title={unlocked ? '' : 'Unlocks at a higher rank'}
+                  style={{ ...btn(p, tool === t.id), opacity: unlocked ? 1 : 0.4 }}
+                >
+                  {unlocked ? t.label : `🔒 ${t.label}`}
+                </button>
+              );
+            })}
+            <button
+              onClick={flagCurrent}
+              disabled={!current || !!currentVerdicts}
+              style={{ ...btn(p, true, p.reject), marginLeft: 'auto' }}
+            >
+              File this lead
+            </button>
+          </div>
+          {tutorialDone && <span style={{ color: p.muted, fontSize: 12 }}>Tutorial complete. Replay from settings.</span>}
+        </main>
+
+        <aside style={{ minHeight: 0, overflow: 'auto' }}>
+          <ResultPanel palette={p} tile={current} steps={currentVerdicts} />
+        </aside>
+      </div>
+
+      {guideStep !== null && (
+        <Guide palette={p} step={guideStep} onSkip={() => { setGuideStep(null); setTutorialDone(true); }} />
+      )}
+    </div>
+  );
+}
+
+function btn(p: { panel: string; text: string; border: string; accent: string }, active: boolean, activeColor?: string): CSSProperties {
+  const bg = active ? activeColor ?? p.accent : p.panel;
+  return {
+    background: bg,
+    color: active ? '#0b0f17' : p.text,
+    border: `1px solid ${p.border}`,
+    borderRadius: 8,
+    padding: '8px 14px',
+    fontWeight: 600,
+    fontSize: 13,
+    cursor: 'pointer',
+    fontFamily: fonts.ui,
+  };
+}
